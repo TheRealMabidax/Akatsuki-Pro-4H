@@ -25,12 +25,12 @@ Each session candle represents exactly four hours. The six session blocks run co
 
 | **Session boundary** | **Non-FX symbols** | **FX symbols** |
 | -------------------- | ------------------ | -------------- |
-| Session 1             | 18:00              | 17:00          |
-| Session 2             | 22:00              | 21:00          |
-| Session 3             | 02:00              | 01:00          |
-| Session 4             | 06:00              | 05:00          |
-| Session 5             | 10:00              | 09:00          |
-| Session 6             | 14:00              | 13:00          |
+| ASIA 1             | 18:00              | 17:00          |
+| ASIA 2             | 22:00              | 21:00          |
+| LONDON             | 02:00              | 01:00          |
+| NEW YORK AM 1             | 06:00              | 05:00          |
+| NEW YORK AM 2            | 10:00              | 09:00          |
+| NEW YORK PM             | 14:00              | 13:00          |
 
 The FX schedule retains a one-hour offset from the non-FX schedule. Session times can be affected by New York daylight-saving changes because the script uses the New York time zone.
 
