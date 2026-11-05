@@ -1,0 +1,407 @@
+//@version=6
+indicator('Akatsuki [Pro+] · (4H)', overlay = true, max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500, max_bars_back = 5000)
+// ============================================================================
+// Manual chart edition: projected 4H session candles only.
+// No profile dashboard, signal detection, midpoint levels, or trade alerts.
+// The user reads price action manually.
+// ============================================================================
+type Candle
+    float o
+    float c
+    float h
+    float l
+    int o_time
+    int c_time
+    int o_idx
+    int c_idx
+    int h_idx
+    int l_idx
+    string interval
+    int candle_left
+    int candle_right
+    int wick_x
+type CandleSettings
+    string htf
+    int max_display
+    bool vt_show
+    color vt_color
+    string vt_style
+    int vt_size
+    bool vt_time_show
+    color vt_time_color
+    string vt_time_size
+    bool hl_show
+    color hl_color
+    string hl_style
+    int hl_width
+type Settings
+    color bull_body
+    color bull_border
+    color bull_wick
+    color bear_body
+    color bear_border
+    color bear_wick
+    int offset
+    int width
+    bool trace_show
+    color trace_o_color
+    string trace_o_style
+    int trace_o_size
+    bool htf_label_show
+    color htf_label_color
+    string htf_label_size
+    bool htf_timer_show
+    color htf_timer_color
+    string htf_timer_size
+    string label_position
+    bool interval_show
+    color interval_color
+    string interval_size
+    string interval_position
+    bool hide_candles
+type DrawingBin
+    array<line> lines
+    array<box> boxes
+    array<label> labels
+// ============================================================================
+// Global state
+// ============================================================================
+Settings settings = Settings.new()
+var CandleSettings htfSettings = CandleSettings.new()
+var array<Candle> candles = array.new<Candle>()
+var DrawingBin bin = DrawingBin.new(lines = array.new<line>(), boxes = array.new<box>(), labels = array.new<label>())
+var table watermarkTable = na
+var string savedWatermarkPosition = ''
+var string previousSession = ''
+color transparent = #ffffff00
+// ============================================================================
+// Session timing: fixed 4H candles using New York local time.
+// Non-FX cycle: 18:00, 22:00, 02:00, 06:00, 10:00, 14:00.
+// FX cycle:     17:00, 21:00, 01:00, 05:00, 09:00, 13:00.
+// Each block is exactly four hours and runs continuously through the day.
+// ============================================================================
+isForex() => syminfo.type == 'forex'
+inSession(string session) => not na(time(timeframe.period, session, 'America/New_York'))
+getCurrentSession() =>
+    if not isForex() and inSession('1800-2200')
+        '1800-2200'
+    else if not isForex() and inSession('2200-0200')
+        '2200-0200'
+    else if not isForex() and inSession('0200-0600')
+        '0200-0600'
+    else if not isForex() and inSession('0600-1000')
+        '0600-1000'
+    else if not isForex() and inSession('1000-1400')
+        '1000-1400'
+    else if not isForex() and inSession('1400-1800')
+        '1400-1800'
+    else if isForex() and inSession('1700-2100')
+        '1700-2100'
+    else if isForex() and inSession('2100-0100')
+        '2100-0100'
+    else if isForex() and inSession('0100-0500')
+        '0100-0500'
+    else if isForex() and inSession('0500-0900')
+        '0500-0900'
+    else if isForex() and inSession('0900-1300')
+        '0900-1300'
+    else if isForex() and inSession('1300-1700')
+        '1300-1700'
+    else
+        ''
+sessionRemainingSeconds(string session) =>
+    int h = hour(timenow, 'America/New_York')
+    int m = minute(timenow, 'America/New_York')
+    int s = second(timenow, 'America/New_York')
+    int remaining = 0
+    if session == '1800-2200'
+        remaining := (22 - h) * 3600 - m * 60 - s
+    else if session == '2200-0200'
+        remaining := h >= 22 ? (26 - h) * 3600 - m * 60 - s : (2 - h) * 3600 - m * 60 - s
+    else if session == '0200-0600'
+        remaining := (6 - h) * 3600 - m * 60 - s
+    else if session == '0600-1000'
+        remaining := (10 - h) * 3600 - m * 60 - s
+    else if session == '1000-1400'
+        remaining := (14 - h) * 3600 - m * 60 - s
+    else if session == '1400-1800'
+        remaining := (18 - h) * 3600 - m * 60 - s
+    else if session == '1700-2100'
+        remaining := (21 - h) * 3600 - m * 60 - s
+    else if session == '2100-0100'
+        remaining := h >= 21 ? (25 - h) * 3600 - m * 60 - s : (1 - h) * 3600 - m * 60 - s
+    else if session == '0100-0500'
+        remaining := (5 - h) * 3600 - m * 60 - s
+    else if session == '0500-0900'
+        remaining := (9 - h) * 3600 - m * 60 - s
+    else if session == '0900-1300'
+        remaining := (13 - h) * 3600 - m * 60 - s
+    else if session == '1300-1700'
+        remaining := (17 - h) * 3600 - m * 60 - s
+    math.max(0, remaining)
+remainingTime(string session) =>
+    if session != '' and barstate.isrealtime
+        int rem = sessionRemainingSeconds(session)
+        int hours = int(math.floor(rem / 3600))
+        int minutes = int(math.floor((rem - hours * 3600) / 60))
+        int seconds = rem - hours * 3600 - minutes * 60
+        str.tostring(hours, '00') + ':' + str.tostring(minutes, '00') + ':' + str.tostring(seconds, '00')
+    else
+        'n/a'
+htfName() => '4H'
+lineStyle(string style) =>
+    switch style
+        'Dashed' => line.style_dashed
+        'Dotted' => line.style_dotted
+        => line.style_solid
+// Display the projected 4H candles only on 1H and lower chart timeframes.
+show4HCandleProjection() => timeframe.in_seconds() <= 60 * 60
+candleSetHigh(array<Candle> arr, float start) =>
+    float value = start
+    for candle in arr
+        if candle.h > value
+            value := candle.h
+    value
+candleSetLow(array<Candle> arr, float start) =>
+    float value = start
+    for candle in arr
+        if candle.l < value
+            value := candle.l
+    value
+// ============================================================================
+// User settings — display only, no model/signal settings.
+// ============================================================================
+string groupHTF = 'HTF Candles  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
+string groupLabels = 'Label Settings  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
+string groupWatermark = 'Watermark  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
+htfSettings.htf := 'SESSION_4H'
+bool hideCandlesInput = input.bool(false, 'Hide HTF Candles?', group=groupHTF, inline='hide')
+settings.hide_candles := hideCandlesInput
+htfSettings.max_display := input.int(4, 'HTF Candles', minval=4, maxval=20, group=groupHTF, inline='count', active=not hideCandlesInput)
+string candleSize = input.string('Small', 'Size', options=['Small', 'Normal', 'Big'], group=groupHTF, inline='count', active=not hideCandlesInput)
+settings.width := candleSize == 'Small' ? 2 : candleSize == 'Normal' ? 4 : 6
+settings.offset := input.int(10, 'Offset', minval=1, maxval=100, group=groupHTF, active=not hideCandlesInput)
+settings.bull_body := input.color(color.new(#f7f7f7, 0), 'Body    ', inline='body', group=groupHTF, active=not hideCandlesInput)
+settings.bear_body := input.color(color.new(#616161, 0), '', inline='body', group=groupHTF, active=not hideCandlesInput)
+settings.bull_border := input.color(color.new(#9c9c9c, 0), 'Border', inline='border', group=groupHTF, active=not hideCandlesInput)
+settings.bear_border := input.color(color.new(#4a4a4a, 0), '', inline='border', group=groupHTF, active=not hideCandlesInput)
+settings.bull_wick := input.color(color.new(#9c9c9c, 0), 'Wick    ', inline='wick', group=groupHTF, active=not hideCandlesInput)
+settings.bear_wick := input.color(color.new(#9c9c9c, 0), '', inline='wick', group=groupHTF, active=not hideCandlesInput)
+bool traceShowInput = input.bool(false, 'HTF Open            ', inline='trace', group=groupHTF, active=not hideCandlesInput)
+settings.trace_show := traceShowInput
+settings.trace_o_color := input.color(color.rgb(0, 0, 0, 50), '', inline='trace', group=groupHTF, active=traceShowInput and not hideCandlesInput)
+settings.trace_o_style := input.string('Solid', '', options=['Solid', 'Dashed', 'Dotted'], inline='trace', group=groupHTF, active=traceShowInput and not hideCandlesInput)
+settings.trace_o_size := input.int(1, 'Width', options=[1, 2, 3, 4], inline='trace', group=groupHTF, active=traceShowInput and not hideCandlesInput)
+bool verticalShowInput = input.bool(true, 'Vertical Lines     ', inline='vt', group=groupHTF)
+htfSettings.vt_show := verticalShowInput
+htfSettings.vt_color := input.color(color.rgb(0, 0, 0, 95), '', inline='vt', group=groupHTF, active=verticalShowInput)
+htfSettings.vt_style := input.string('Solid', '', options=['Solid', 'Dashed', 'Dotted'], inline='vt', group=groupHTF, active=verticalShowInput)
+htfSettings.vt_size := input.int(1, 'Width', options=[1, 2, 3, 4], inline='vt', group=groupHTF, active=verticalShowInput)
+bool highLowShowInput = input.bool(false, 'High / Low Lines', inline='hl', group=groupHTF)
+htfSettings.hl_show := highLowShowInput
+htfSettings.hl_color := input.color(color.rgb(0, 0, 0, 70), '', inline='hl', group=groupHTF, active=highLowShowInput)
+htfSettings.hl_style := input.string('Dotted', '', options=['Solid', 'Dashed', 'Dotted'], inline='hl', group=groupHTF, active=highLowShowInput)
+htfSettings.hl_width := input.int(1, 'Width', options=[1, 2, 3, 4], inline='hl', group=groupHTF, active=highLowShowInput)
+bool htfLabelShowInput = input.bool(true, 'HTF Label                    ', group=groupLabels, inline='htf')
+settings.htf_label_show := htfLabelShowInput
+settings.htf_label_color := input.color(color.rgb(0, 0, 0), '', group=groupLabels, inline='htf', active=htfLabelShowInput)
+settings.htf_label_size := input.string(size.tiny, '', options=[size.tiny, size.small, size.normal, size.large, size.huge], group=groupLabels, inline='htf', active=htfLabelShowInput)
+settings.label_position := input.string('Top', 'Position', options=['Both', 'Top', 'Bottom'], group=groupLabels, inline='htf', active=htfLabelShowInput)
+bool htfTimerShowInput = input.bool(true, 'Remaining Time         ', inline='timer', group=groupLabels, active=htfLabelShowInput)
+settings.htf_timer_show := htfTimerShowInput
+settings.htf_timer_color := input.color(color.rgb(0, 0, 0), '', inline='timer', group=groupLabels, active=htfTimerShowInput and htfLabelShowInput)
+settings.htf_timer_size := input.string(size.tiny, '', options=[size.tiny, size.small, size.normal, size.large, size.huge], group=groupLabels, inline='timer', active=htfTimerShowInput and htfLabelShowInput)
+bool intervalShowInput = input.bool(true, 'Interval Value              ', group=groupLabels, inline='interval')
+settings.interval_show := intervalShowInput
+settings.interval_color := input.color(color.rgb(0, 0, 0), '', group=groupLabels, inline='interval', active=intervalShowInput)
+settings.interval_size := input.string(size.tiny, '', options=[size.tiny, size.small, size.normal, size.large, size.huge], group=groupLabels, inline='interval', active=intervalShowInput)
+settings.interval_position := input.string('Bottom', 'Position', options=['Both', 'Top', 'Bottom'], group=groupLabels, inline='interval', active=intervalShowInput)
+bool separatorTimeShowInput = input.bool(true, 'Time Under Separators', inline='vt_time', group=groupLabels, active=verticalShowInput)
+htfSettings.vt_time_show := separatorTimeShowInput
+htfSettings.vt_time_color := input.color(color.rgb(0, 0, 0), '', inline='vt_time', group=groupLabels, active=verticalShowInput and separatorTimeShowInput)
+// plotshape() requires a constant size, so separator time text uses size.tiny.
+htfSettings.vt_time_size := size.tiny
+bool watermarkShow = input.bool(true, 'Show Watermark', group=groupWatermark, inline='wm1')
+string watermarkPosition = input.string('Bottom Right', 'Position', options=['Top Left', 'Top Center', 'Top Right', 'Middle Left', 'Middle Center', 'Middle Right', 'Bottom Left', 'Bottom Center', 'Bottom Right'], group=groupWatermark, inline='wm1', active=watermarkShow)
+color watermarkColor = input.color(color.new(color.gray, 30), 'Color', group=groupWatermark, inline='wm2', active=watermarkShow)
+string watermarkSize = input.string(size.normal, 'Size', options=[size.tiny, size.small, size.normal, size.large, size.huge], group=groupWatermark, inline='wm2', active=watermarkShow)
+color watermarkBackground = input.color(color.new(color.black, 100), 'Background', group=groupWatermark, inline='wm3', active=watermarkShow)
+string watermarkBrand = input.string('MABIDAX', 'Brand', group=groupWatermark, inline='wm4', active=watermarkShow)
+// ============================================================================
+// Drawing routines
+// ============================================================================
+method clear(DrawingBin drawingBin) =>
+    for ln in drawingBin.lines
+        line.delete(ln)
+    for bx in drawingBin.boxes
+        box.delete(bx)
+    for lbl in drawingBin.labels
+        label.delete(lbl)
+    array.clear(drawingBin.lines)
+    array.clear(drawingBin.boxes)
+    array.clear(drawingBin.labels)
+    drawingBin
+method calculatePositions(array<Candle> arr, int offset) =>
+    int count = arr.size()
+    if count > 0
+        for i = count - 1 to 0 by 1
+            Candle candle = arr.get(i)
+            int buffer = offset + (settings.width + 1) * (count - i - 1)
+            candle.candle_left := bar_index + buffer
+            candle.candle_right := bar_index + settings.width + buffer
+            candle.wick_x := bar_index + int(settings.width / 2) + buffer
+    arr
+method drawCandles(array<Candle> arr) =>
+    for candle in arr
+        bool bull = candle.c > candle.o
+        color borderColor = bull ? settings.bull_border : settings.bear_border
+        color bodyColor = bull ? settings.bull_body : settings.bear_body
+        color wickColor = bull ? settings.bull_wick : settings.bear_wick
+        bin.boxes.push(box.new(candle.candle_left, math.max(candle.o, candle.c), candle.candle_right, math.min(candle.o, candle.c), borderColor, 1, bgcolor=bodyColor))
+        bin.lines.push(line.new(candle.wick_x, candle.h, candle.wick_x, math.max(candle.o, candle.c), color=wickColor))
+        bin.lines.push(line.new(candle.wick_x, math.min(candle.o, candle.c), candle.wick_x, candle.l, color=wickColor))
+        if settings.interval_show and candle.interval != ''
+            if settings.interval_position == 'Both' or settings.interval_position == 'Top'
+                bin.labels.push(label.new(candle.wick_x, candle.h, candle.interval, color=transparent, textcolor=settings.interval_color, style=label.style_label_down, size=settings.interval_size))
+            if settings.interval_position == 'Both' or settings.interval_position == 'Bottom'
+                bin.labels.push(label.new(candle.wick_x, candle.l, candle.interval, color=transparent, textcolor=settings.interval_color, style=label.style_label_up, size=settings.interval_size))
+    arr
+method drawSeparatorsAndLevels(array<Candle> arr) =>
+    verticalStyle = lineStyle(htfSettings.vt_style)
+    horizontalStyle = lineStyle(htfSettings.hl_style)
+    for [i, candle] in arr
+        if htfSettings.vt_show
+            bin.lines.push(line.new(candle.o_time, candle.h, candle.o_time, candle.l, xloc=xloc.bar_time, extend=extend.both, color=htfSettings.vt_color, style=verticalStyle, width=htfSettings.vt_size))
+        if htfSettings.hl_show and i != 0 and not na(candle.c_time) and candle.c_time > 0
+            bin.lines.push(line.new(candle.o_time, candle.h, candle.c_time, candle.h, xloc=xloc.bar_time, color=htfSettings.hl_color, style=horizontalStyle, width=htfSettings.hl_width))
+            bin.lines.push(line.new(candle.o_time, candle.l, candle.c_time, candle.l, xloc=xloc.bar_time, color=htfSettings.hl_color, style=horizontalStyle, width=htfSettings.hl_width))
+    arr
+method drawHTFLabel(array<Candle> arr, int offset, string currentSession) =>
+    int count = arr.size()
+    if count > 0 and settings.htf_label_show
+        float top = candleSetHigh(arr, 0.0)
+        float bottom = candleSetLow(arr, top)
+        int x = bar_index + offset + int((settings.width + 1) * (count - 1) / 2)
+        string labelText = htfName()
+        if settings.htf_timer_show
+            labelText += '\n\n(' + remainingTime(currentSession) + ')'
+        if settings.label_position == 'Both' or settings.label_position == 'Top'
+            bin.labels.push(label.new(x, top, labelText, color=transparent, textcolor=settings.htf_label_color, style=label.style_label_down, size=settings.htf_label_size))
+        if settings.label_position == 'Both' or settings.label_position == 'Bottom'
+            bin.labels.push(label.new(x, bottom, labelText, color=transparent, textcolor=settings.htf_label_color, style=label.style_label_up, size=settings.htf_label_size))
+    arr
+method drawOpenTrace(array<Candle> arr) =>
+    if settings.trace_show and arr.size() > 0
+        Candle candle = arr.first()
+        if bar_index - candle.o_idx < 5000
+            bin.lines.push(line.new(candle.o_idx, candle.o, candle.candle_left, candle.o, color=settings.trace_o_color, style=lineStyle(settings.trace_o_style), width=settings.trace_o_size))
+    arr
+watermarkTablePosition(string p) =>
+    switch p
+        'Top Left' => position.top_left
+        'Top Center' => position.top_center
+        'Top Right' => position.top_right
+        'Middle Left' => position.middle_left
+        'Middle Center' => position.middle_center
+        'Middle Right' => position.middle_right
+        'Bottom Left' => position.bottom_left
+        'Bottom Center' => position.bottom_center
+        => position.bottom_right
+// ============================================================================
+// Main execution: assemble and draw synthetic 4H session candles.
+// ============================================================================
+string currentSession = getCurrentSession()
+bool newSessionCandle = currentSession != previousSession and currentSession != ''
+if newSessionCandle
+    if candles.size() > 0
+        Candle priorCandle = candles.first()
+        priorCandle.c_time := time
+    Candle newCandle = Candle.new()
+    newCandle.o := open
+    newCandle.c := close
+    newCandle.h := high
+    newCandle.l := low
+    newCandle.o_time := time
+    newCandle.c_time := na
+    newCandle.o_idx := bar_index
+    newCandle.c_idx := bar_index
+    newCandle.h_idx := bar_index
+    newCandle.l_idx := bar_index
+    newCandle.interval := str.format_time(time, 'HH:mm', 'America/New_York')
+    array.unshift(candles, newCandle)
+    while candles.size() > htfSettings.max_display
+        array.pop(candles)
+else if currentSession != '' and candles.size() > 0
+    Candle activeCandle = candles.first()
+    if high > activeCandle.h
+        activeCandle.h := high
+        activeCandle.h_idx := bar_index
+    if low < activeCandle.l
+        activeCandle.l := low
+        activeCandle.l_idx := bar_index
+    activeCandle.c := close
+    activeCandle.c_idx := bar_index
+previousSession := currentSession
+// Separator-time labels are placed below each session-start bar. Restrict them
+// to the recent session window shown by the projected HTF candle count.
+int chartTfSeconds = timeframe.in_seconds()
+int separatorLookbackBars = chartTfSeconds > 0 ? int(math.ceil(htfSettings.max_display * 4.0 * 3600.0 / chartTfSeconds)) : htfSettings.max_display * 10
+bool recentSeparatorWindow = bar_index >= last_bar_index - separatorLookbackBars
+bool showSeparatorTime = show4HCandleProjection() and htfSettings.vt_show and htfSettings.vt_time_show and recentSeparatorWindow and newSessionCandle
+bool nonFx1 = showSeparatorTime and not isForex() and currentSession == '1800-2200'
+bool nonFx2 = showSeparatorTime and not isForex() and currentSession == '2200-0200'
+bool nonFx3 = showSeparatorTime and not isForex() and currentSession == '0200-0600'
+bool nonFx4 = showSeparatorTime and not isForex() and currentSession == '0600-1000'
+bool nonFx5 = showSeparatorTime and not isForex() and currentSession == '1000-1400'
+bool nonFx6 = showSeparatorTime and not isForex() and currentSession == '1400-1800'
+bool fx1 = showSeparatorTime and isForex() and currentSession == '1700-2100'
+bool fx2 = showSeparatorTime and isForex() and currentSession == '2100-0100'
+bool fx3 = showSeparatorTime and isForex() and currentSession == '0100-0500'
+bool fx4 = showSeparatorTime and isForex() and currentSession == '0500-0900'
+bool fx5 = showSeparatorTime and isForex() and currentSession == '0900-1300'
+bool fx6 = showSeparatorTime and isForex() and currentSession == '1300-1700'
+
+// Keep separator times anchored to the bottom edge of the chart pane,
+// matching the 7H version. A single plotshape per time keeps plot usage low.
+plotshape(nonFx1, title='4H Separator 18:00', style=shape.labelup, location=location.bottom, text='18:00', color=color.new(color.black, 100), textcolor=htfSettings.vt_time_color, size=size.tiny)
+plotshape(nonFx2, title='4H Separator 22:00', style=shape.labelup, location=location.bottom, text='22:00', color=color.new(color.black, 100), textcolor=htfSettings.vt_time_color, size=size.tiny)
+plotshape(nonFx3, title='4H Separator 02:00', style=shape.labelup, location=location.bottom, text='02:00', color=color.new(color.black, 100), textcolor=htfSettings.vt_time_color, size=size.tiny)
+plotshape(nonFx4, title='4H Separator 06:00', style=shape.labelup, location=location.bottom, text='06:00', color=color.new(color.black, 100), textcolor=htfSettings.vt_time_color, size=size.tiny)
+plotshape(nonFx5, title='4H Separator 10:00', style=shape.labelup, location=location.bottom, text='10:00', color=color.new(color.black, 100), textcolor=htfSettings.vt_time_color, size=size.tiny)
+plotshape(nonFx6, title='4H Separator 14:00', style=shape.labelup, location=location.bottom, text='14:00', color=color.new(color.black, 100), textcolor=htfSettings.vt_time_color, size=size.tiny)
+plotshape(fx1, title='4H Forex Separator 17:00', style=shape.labelup, location=location.bottom, text='17:00', color=color.new(color.black, 100), textcolor=htfSettings.vt_time_color, size=size.tiny)
+plotshape(fx2, title='4H Forex Separator 21:00', style=shape.labelup, location=location.bottom, text='21:00', color=color.new(color.black, 100), textcolor=htfSettings.vt_time_color, size=size.tiny)
+plotshape(fx3, title='4H Forex Separator 01:00', style=shape.labelup, location=location.bottom, text='01:00', color=color.new(color.black, 100), textcolor=htfSettings.vt_time_color, size=size.tiny)
+plotshape(fx4, title='4H Forex Separator 05:00', style=shape.labelup, location=location.bottom, text='05:00', color=color.new(color.black, 100), textcolor=htfSettings.vt_time_color, size=size.tiny)
+plotshape(fx5, title='4H Forex Separator 09:00', style=shape.labelup, location=location.bottom, text='09:00', color=color.new(color.black, 100), textcolor=htfSettings.vt_time_color, size=size.tiny)
+plotshape(fx6, title='4H Forex Separator 13:00', style=shape.labelup, location=location.bottom, text='13:00', color=color.new(color.black, 100), textcolor=htfSettings.vt_time_color, size=size.tiny)
+
+bin.clear()
+if barstate.islast or barstate.isrealtime
+    if show4HCandleProjection()
+        candles.calculatePositions(settings.offset)
+        candles.drawSeparatorsAndLevels()
+        if not settings.hide_candles
+            candles.drawCandles()
+            candles.drawHTFLabel(settings.offset, currentSession)
+            candles.drawOpenTrace()
+    if watermarkShow
+        if na(watermarkTable) or savedWatermarkPosition != watermarkPosition
+            if not na(watermarkTable)
+                table.delete(watermarkTable)
+            watermarkTable := table.new(watermarkTablePosition(watermarkPosition), 1, 1, border_width=0, frame_width=0)
+            savedWatermarkPosition := watermarkPosition
+        int chartSeconds = timeframe.in_seconds()
+        string chartTimeframe = timeframe.period
+        if chartSeconds < 60
+            chartTimeframe := str.tostring(chartSeconds) + 's'
+        else if chartSeconds < 3600
+            chartTimeframe := str.tostring(chartSeconds / 60) + 'm'
+        else if chartSeconds < 86400
+            chartTimeframe := str.tostring(chartSeconds / 3600) + 'H'
+        string watermarkText = chartTimeframe + ' ' + syminfo.ticker + '\n' + watermarkBrand
+        table.cell(watermarkTable, 0, 0, watermarkText, text_color=watermarkColor, text_size=watermarkSize, text_halign=text.align_center, text_valign=text.align_center, bgcolor=watermarkBackground)
+    else if not na(watermarkTable)
+        table.delete(watermarkTable)
+        watermarkTable := na
+        savedWatermarkPosition := '' 
