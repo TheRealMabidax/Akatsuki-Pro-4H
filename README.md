@@ -1,4 +1,4 @@
-# Akatsuki [Pro+] · (4H)
+# Mabidax [Pro+] · (4H)
 
 A manual chart-reading indicator for TradingView, built to display custom 4-hour session candles and make session timing easier to read directly on the price chart.
 
